@@ -1,0 +1,22 @@
+# Source configuration for opportunity fetching
+
+sources:
+  - id: nsf_programs
+    type: html_index
+    url: "https://www.nsf.gov/funding/programs.jsp"
+    buyer_org: "National Science Foundation"
+    buyer_type: "federal"
+    region: "north_america"
+    listing_link_selectors: ".funding-opps a"
+    pdf_link_selectors: "a[href$='.pdf']"
+    notes: "NSF public funding programs listing"
+
+  - id: icann_rfp
+    type: html_index
+    url: "https://www.icann.org/resources/pages/rfps"
+    buyer_org: "ICANN"
+    buyer_type: "international"
+    region: "global"
+    listing_link_selectors: ".rfp-listing a"
+    pdf_link_selectors: "a[href$='.pdf']"
+    notes: "ICANN public RFP index"
