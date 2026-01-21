@@ -1,22 +1,39 @@
-# Source configuration for opportunity fetching
-
 sources:
-  - id: nsf_programs
+  - id: nsf_25_531
+    name: "NSF 25-531 CICI Solicitation"
     type: html_index
-    url: "https://www.nsf.gov/funding/programs.jsp"
-    buyer_org: "National Science Foundation"
-    buyer_type: "federal"
-    region: "north_america"
-    listing_link_selectors: ".funding-opps a"
-    pdf_link_selectors: "a[href$='.pdf']"
-    notes: "NSF public funding programs listing"
+    base_url: "https://www.nsf.gov/funding/opportunities/cici-cybersecurity-innovation-cyberinfrastructure/nsf25-531/solicitation"
+    crawl:
+      strategy: link_follow
+      listing_link_selectors:
+        - "a[href$='.pdf']"
+      pdf_link_selectors:
+        - "a[href$='.pdf']"
+      max_listings: 10
+      pdf_required: true
+    normalize:
+      buyer_org: "National Science Foundation (NSF)"
+      buyer_type: "federal"
+      region: "north_america"
+    tags: ["grants", "nsf"]
 
-  - id: icann_rfp
+  - id: icann_rfp_index
+    name: "ICANN RFP Index"
     type: html_index
-    url: "https://www.icann.org/resources/pages/rfps"
-    buyer_org: "ICANN"
-    buyer_type: "international"
-    region: "global"
-    listing_link_selectors: ".rfp-listing a"
-    pdf_link_selectors: "a[href$='.pdf']"
-    notes: "ICANN public RFP index"
+    base_url: "https://www.icann.org/en/news/rfps"
+    crawl:
+      strategy: link_follow
+      listing_link_selectors:
+        - "a[href*='/en/news/rfps/']"
+        - "a[href*='rfp']"
+        - "a[href$='.pdf']"
+      pdf_link_selectors:
+        - "a[href$='.pdf']"
+        - "a[href*='.pdf?']"
+      max_listings: 50
+      pdf_required: false
+    normalize:
+      buyer_org: "Internet Corporation for Assigned Names and Numbers (ICANN)"
+      buyer_type: "international"
+      region: "global"
+    tags: ["rfp", "icann"]

@@ -24,16 +24,19 @@ class OieScorer:
         deadline_iso = self._parse_deadline(item.get("deadline"))
         item["deadline"] = deadline_iso
 
-        # Compute deadline bucket
-        item["deadline_bucket"] = self._compute_deadline_bucket(deadline_iso)
+        # Compute deadline bucket (with conservative handling of parse failures)
+        deadline_bucket = self._compute_deadline_bucket(deadline_iso)
+        item["deadline_bucket"] = deadline_bucket
 
         # Extract budget and assign bucket
         budget_value = self._extract_budget(item.get("description", ""))
         item["budget_value"] = budget_value
         item["budget_bucket"] = self._compute_budget_bucket(budget_value)
 
-        # Assign decision using simple heuristic
-        item["decision"] = self._compute_decision(item["deadline_bucket"], item["budget_bucket"])
+        # Assign decision using conservative safety rails
+        item["decision"] = self._compute_decision(
+            deadline_bucket, item["budget_bucket"], deadline_iso, budget_value
+        )
 
         # Generate one-liner summary
         item["one_liner"] = self._generate_one_liner(item)
@@ -88,9 +91,13 @@ class OieScorer:
     def _compute_deadline_bucket(self, deadline_iso: Optional[str]) -> str:
         """
         Compute deadline bucket: immediate (<7 days), near_term (7-30 days), planning (>30 days)
+
+        Parse failure behavior (conservative):
+        - If deadline parse fails -> deadline_bucket = "planning"
+        - This prevents false "immediate" classifications
         """
         if not deadline_iso:
-            return "unknown"
+            return "planning"  # Conservative: assume planning if no deadline
 
         try:
             deadline_dt = datetime.fromisoformat(deadline_iso).replace(tzinfo=timezone.utc)
@@ -104,7 +111,7 @@ class OieScorer:
             else:
                 return "planning"
         except (ValueError, TypeError):
-            return "unknown"
+            return "planning"  # Conservative: assume planning on parse failure
 
     def _extract_budget(self, text: str) -> Optional[float]:
         """
@@ -153,22 +160,48 @@ class OieScorer:
         else:
             return "enterprise"
 
-    def _compute_decision(self, deadline_bucket: str, budget_bucket: str) -> str:
+    def _compute_decision(
+        self,
+        deadline_bucket: str,
+        budget_bucket: str,
+        deadline_iso: str | None,
+        budget_value: float | None,
+    ) -> str:
         """
-        Simple heuristic decision logic:
-        - GO: planning deadline + mid/enterprise budget
-        - MAYBE: near_term deadline OR small budget
-        - NO_GO: immediate deadline OR micro/unknown budget
+        Conservative scoring safety rails (v0 trust protection).
+
+        GO requires ALL of:
+        - deadline parsed successfully (not None)
+        - deadline > 14 days from now
+        - budget_bucket != unknown
+        - explicit numeric budget detected (budget_value not None)
+
+        Otherwise:
+        - MAYBE unless obvious hard NO_GO trigger fires
         """
-        if deadline_bucket == "planning" and budget_bucket in ["mid", "enterprise"]:
-            return "GO"
-        elif deadline_bucket in ["near_term", "planning"] and budget_bucket in [
-            "small",
-            "mid",
-        ]:
-            return "MAYBE"
-        else:
+        # Hard NO_GO triggers
+        if deadline_bucket == "immediate":
             return "NO_GO"
+        if budget_bucket in ["micro", "unknown"] and deadline_bucket == "unknown":
+            return "NO_GO"
+
+        # GO only if all criteria met
+        if deadline_iso and budget_value is not None and budget_bucket != "unknown":
+            # Check deadline is > 14 days from now
+            try:
+                from datetime import datetime, timezone
+
+                deadline_dt = datetime.fromisoformat(deadline_iso).replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                days_until = (deadline_dt - now).days
+
+                if days_until > 14:
+                    return "GO"
+            except (ValueError, TypeError):
+                pass
+
+        # Default to MAYBE for everything else
+        return "MAYBE"
 
     def _generate_one_liner(self, item: dict[str, Any]) -> str:
         """Generate a concise summary line"""

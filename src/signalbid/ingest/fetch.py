@@ -6,6 +6,8 @@ from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 class MultiSourceFetcher:
@@ -13,10 +15,27 @@ class MultiSourceFetcher:
 
     def __init__(self, config: dict[str, Any]):
         self.config = config
-        self.session = requests.Session()
-        self.session.headers.update(
+        self.session = self._create_retry_session()
+
+    def _create_retry_session(self) -> requests.Session:
+        """Create requests session with retry logic and exponential backoff"""
+        session = requests.Session()
+        session.headers.update(
             {"User-Agent": "SignalBid/0.1.0 (Opportunity Intelligence; +https://signalbid.com)"}
         )
+
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET", "HEAD"],
+        )
+
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+
+        return session
 
     def fetch_source(self, source: dict[str, Any]) -> list[dict[str, Any]]:
         """Fetch opportunities from a single source configuration"""
@@ -39,9 +58,18 @@ class MultiSourceFetcher:
         5. Return structured opportunity records
         """
         items = []
-        index_url = source["url"]
-        listing_selector = source.get("listing_link_selectors", "a")
-        pdf_selector = source.get("pdf_link_selectors", "a[href$='.pdf']")
+        index_url = source.get("base_url") or source.get("url")  # support both schemas
+        crawl_config = source.get("crawl", {})
+        normalize_config = source.get("normalize", {})
+
+        listing_selectors = crawl_config.get("listing_link_selectors", ["a"])
+        pdf_selectors = crawl_config.get("pdf_link_selectors", ["a[href$='.pdf']"])
+        max_listings = crawl_config.get("max_listings", 50)
+
+        # Support old schema fallback
+        if not crawl_config:
+            listing_selectors = [source.get("listing_link_selectors", "a")]
+            pdf_selectors = [source.get("pdf_link_selectors", "a[href$='.pdf']")]
 
         # Fetch index page
         try:
@@ -51,9 +79,26 @@ class MultiSourceFetcher:
             raise RuntimeError(f"Failed to fetch index {index_url}: {e}")
 
         soup = BeautifulSoup(response.content, "lxml")
-        listing_links = soup.select(listing_selector)
 
-        for link in listing_links:
+        # Try each selector and collect all matching links
+        all_links = []
+        for selector in listing_selectors:
+            links = soup.select(selector)
+            if links:
+                all_links.extend(links)
+
+        # Deduplicate by href and limit
+        seen_hrefs = set()
+        unique_links = []
+        for link in all_links:
+            href = link.get("href")
+            if href and href not in seen_hrefs:
+                seen_hrefs.add(href)
+                unique_links.append(link)
+                if len(unique_links) >= max_listings:
+                    break
+
+        for link in unique_links:
             href = link.get("href")
             if not href:
                 continue
@@ -63,15 +108,19 @@ class MultiSourceFetcher:
 
             # Follow listing link to get detail page
             detail_data = self._fetch_listing_detail(
-                canonical_url, pdf_selector, source.get("buyer_org", "Unknown")
+                canonical_url,
+                pdf_selectors,
+                normalize_config.get("buyer_org") or source.get("buyer_org", "Unknown"),
             )
 
             item = {
                 "title": title,
                 "canonical_url": canonical_url,
-                "buyer_org": source.get("buyer_org", "Unknown"),
-                "buyer_type": source.get("buyer_type", "unknown"),
-                "region": source.get("region", "unknown"),
+                "buyer_org": normalize_config.get("buyer_org")
+                or source.get("buyer_org", "Unknown"),
+                "buyer_type": normalize_config.get("buyer_type")
+                or source.get("buyer_type", "unknown"),
+                "region": normalize_config.get("region") or source.get("region", "unknown"),
                 "pdf_url": detail_data.get("pdf_url"),
                 "deadline": detail_data.get("deadline"),
                 "description": detail_data.get("description", ""),
@@ -81,7 +130,9 @@ class MultiSourceFetcher:
 
         return items
 
-    def _fetch_listing_detail(self, url: str, pdf_selector: str, buyer_org: str) -> dict[str, Any]:
+    def _fetch_listing_detail(
+        self, url: str, pdf_selectors: list[str], buyer_org: str
+    ) -> dict[str, Any]:
         """Fetch detail page and extract PDF links and metadata"""
         try:
             response = self.session.get(url, timeout=30)
@@ -91,13 +142,15 @@ class MultiSourceFetcher:
 
         soup = BeautifulSoup(response.content, "lxml")
 
-        # Extract PDF link
+        # Extract PDF link - try each selector
         pdf_url = None
-        pdf_links = soup.select(pdf_selector)
-        if pdf_links:
-            pdf_href = pdf_links[0].get("href")
-            if pdf_href:
-                pdf_url = urljoin(url, pdf_href)
+        for pdf_selector in pdf_selectors:
+            pdf_links = soup.select(pdf_selector)
+            if pdf_links:
+                pdf_href = pdf_links[0].get("href")
+                if pdf_href:
+                    pdf_url = urljoin(url, pdf_href)
+                    break
 
         # Extract deadline (best effort - look for common patterns)
         deadline = self._extract_deadline(soup)
